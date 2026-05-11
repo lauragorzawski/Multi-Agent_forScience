@@ -8,6 +8,12 @@ data assistant that sorts messy `.xy`/`.txt` measurement files, extracts metadat
 plots trends, adds point-level comments, and supports scientific discussion
 through agents.
 
+The current prototype focuses on a common scientific-lab pain point: raw
+measurement metadata often lives in filenames. The first user-facing agent asks
+where the data is stored, asks the user to describe the filename pattern with an
+example, creates an overview table of files and inferred parameters, accepts
+feedback, and writes approved Phase 1 outputs.
+
 ## Shared Contract
 
 All phases use the same file contract.
@@ -50,13 +56,17 @@ Required columns:
 
 ### Phase 1: Data Sorting and Metadata Extraction
 
-Build the ingestion pipeline.
+Build the guided ingestion and metadata-agent pipeline.
 
 Responsibilities:
 
 - Scan a messy folder for `.xy` and `.txt` files.
 - Parse each measurement file into clean `x,y` numeric data.
+- Ask the user where data is stored and what filename pattern encodes metadata.
 - Extract metadata from filenames using transparent rules.
+- Optionally use a lightweight model agent to interpret pattern/example/feedback text.
+- Keep final extraction deterministic, inspectable, and validated before execution.
+- Show a file/parameter overview table and ask for user approval.
 - Write `metadata_table.csv`.
 - Write one cleaned trace file per input file in `parsed_traces/`.
 - Flag unclear filenames or broken files instead of guessing.
@@ -67,6 +77,15 @@ Success output:
 - `parsed_traces/*.csv`
 - `comments.csv`
 - `phase1_report.md`
+- `metadata_agent_report.md`
+- `metadata_agent_extractor.py`
+
+Current interfaces:
+
+- Streamlit guided metadata app: `scientific_data_assistant/streamlit_metadata_app.py`
+- FastAPI backend: `scientific_data_assistant/api.py`
+- Optional Dash table interface: `scientific_data_assistant/dash_app.py`
+- Command-line ingestion: `scripts/run_phase1.py`
 
 ### Phase 2: Plotting Over Parameters
 
@@ -119,6 +138,7 @@ Responsibilities:
 
 Recommended agents:
 
+- Metadata Agent: guides folder/pattern/feedback/approval and creates Phase 1 outputs.
 - Data Inspector Agent: checks files, metadata completeness, and parse status.
 - Trend Analyst Agent: compares materials, thicknesses, and exposure times.
 - Quality Critic Agent: highlights unreliable points and missing metadata.
@@ -133,12 +153,13 @@ Success output:
 ## Integration Plan
 
 - Everyone works against the shared contract.
-- Phase 1 must be completed first, or other phases use a fake example dataset
-  with the same structure.
+- Phase 1 can be run directly or through the guided metadata agent.
 - Phase 2 depends on `metadata_table.csv` and `parsed_traces/`.
 - Phase 3 depends on Phase 2 plots and adds `comments.csv`.
 - Phase 4 depends on all previous outputs.
-- Final demo should be one Streamlit app with four tabs:
+- Final demo should include one guided Streamlit metadata interface and one
+  full dashboard with tabs:
+  - Metadata Agent
   - Data Review
   - Plots
   - Comments
@@ -146,17 +167,35 @@ Success output:
 
 ## Validation Criteria
 
-- Every plotted point traces back to an original `.xy` file.
+- Every metadata row and plotted point traces back to an original `.xy`/`.txt` file.
 - Metadata extraction shows uncertainty instead of hallucinating.
+- Generated extractor code passes safety validation before execution.
+- The user can inspect the overview table before approving outputs.
 - Comments appear on hover for the correct point/file.
 - Agents cite their evidence.
 - The system handles messy, imperfect scientific data gracefully.
+- Automated tests cover parsing, custom metadata columns, API state, model-agent fallback,
+  approval, and discussion-agent behavior.
+
+## Evaluation Evidence To Report
+
+- File discovery: number of `.xy`/`.txt` files found.
+- Parse status: count of `ok`, `warning`, and `failed` files.
+- Metadata completeness: missing material/thickness/date/setting/measurement type.
+- Agent workflow: whether the system asks for folder, pattern/example, feedback,
+  overview review, and approval in order.
+- Traceability: each row has `file_path`, `file_id`, parse status, notes, and an
+  optional saved extractor/report.
+- Cost: deterministic parsing and plotting cost nothing beyond local compute;
+  optional model assistance is isolated to pattern/feedback interpretation and
+  discussion polishing.
 
 ## Assumptions
 
 - First version uses `.xy` and simple two-column `.txt` files.
 - Metadata comes mainly from filenames.
 - Parsing, plotting, and calculations are deterministic.
-- LLM agents are used for explanation, discussion, summarization, and scientific reasoning.
+- Optional LLM/model calls are used only for text interpretation, explanation,
+  discussion, summarization, and scientific reasoning.
 - The main story is: “We turn messy lab files into traceable, explainable plots
   and agent-assisted scientific insight.”

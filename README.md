@@ -7,49 +7,58 @@ multi-agent workflow.
 
 The core pipeline is intentionally conservative:
 
-- `.xy` parsing, metadata extraction, summaries, and validation are deterministic.
+- `.xy`/`.txt` parsing, metadata extraction, summaries, and validation are deterministic by default.
+- Optional model assistance can interpret the user's filename pattern and feedback, but final parsing is still validated Python.
 - Agents explain and discuss evidence; they do not invent numeric results.
 - Every output keeps a link back to the original file through `file_id`.
 
 ## Quick Start
 
-Use the local Python environment already created in this folder:
+Create or activate a Python environment, then install dependencies:
 
 ```zsh
 source .venv/bin/activate
-```
-
-Run Phase 1 on the included sample data:
-
-```zsh
-python scripts/run_phase1.py sample_data demo_output
-```
-
-Run Phase 1 on Laura's copied July 2025 FGT text files:
-
-```zsh
-python scripts/run_phase1.py raw_data/20250708 fgt_output
-```
-
-Ask the multi-agent discussion layer a question:
-
-```zsh
-python scripts/run_discussion.py demo_output "Which sample has the strongest signal and what should we inspect next?"
-```
-
-If you install the optional dashboard dependencies, run:
-
-```zsh
 pip install -r requirements.txt
-streamlit run scientific_data_assistant/dashboard.py
 ```
 
-Run the API for the same conversational metadata builder:
+### Guided Metadata Agent
+
+Start the API in one terminal:
 
 ```zsh
-pip install -r requirements.txt
 python scripts/run_api.py --port 8000
 ```
+
+Start the guided Streamlit interface in a second terminal:
+
+```zsh
+streamlit run scientific_data_assistant/streamlit_metadata_app.py --server.port 8501
+```
+
+Open `http://127.0.0.1:8501`.
+
+The agent guides the researcher through:
+
+1. Where is your data stored?
+2. What is the filename metadata pattern?
+3. Give one example and explain what each part means.
+4. Review the file/parameter overview table.
+5. Send feedback if anything is unclear or wrong.
+6. Approve and write the final Phase 1 outputs.
+
+For the included FGT-style data, use:
+
+- Raw data folder: `raw_data/20250708`
+- Output folder: `fgt_output_api`
+- Pattern: `material_sample_position_thickness_date_setting`
+- Example: `FGT_1_1_20nm_20250708_0p1.txt means material FGT, sample position 1_1, thickness 20nm, date 2025-07-08, setting 0.1.`
+
+The Streamlit sidebar includes **Use model assistance for pattern and feedback**.
+When enabled, the configured OpenAI model helps interpret the pattern/example
+and feedback text. If no key is configured, the system falls back to local
+deterministic interpretation.
+
+### API Usage
 
 Preview filename-derived metadata through the API:
 
@@ -59,6 +68,9 @@ curl -X POST http://127.0.0.1:8000/metadata-agent/turn \
   -d '{
     "input_dir": "sample_data",
     "output_dir": "demo_output",
+    "metadata_pattern": "sample_material_thickness_exposure_measurement",
+    "pattern_example": "S01_Fe_2nm_exp30s_xrd.xy means sample S01, material Fe, thickness 2nm, exposure 30s, measurement xrd.",
+    "use_model_agent": false,
     "user_message": ""
   }'
 ```
@@ -70,9 +82,10 @@ report/code artifacts.
 
 The response includes:
 
-- `state.table_overview`: compact review table with file name and extracted parameters.
+- `table_overview`: compact review table with file name and extracted parameters.
 - `state.preview_rows`: full dataframe-style rows that will become `metadata_table.csv`.
-- `state.suggested_user_messages`: example feedback or approval messages.
+- `suggested_user_messages`: example feedback or approval messages.
+- `model_status`: whether model assistance was used or deterministic fallback was used.
 
 Useful `user_message` examples:
 
@@ -82,25 +95,34 @@ Useful `user_message` examples:
 - `Add a column named run_id.`
 - `approve and write outputs`
 
-For a friendlier table interface, keep the API running and start Dash in a
-second terminal:
+### Other Interfaces
+
+Full multi-tab Streamlit dashboard:
+
+```zsh
+streamlit run scientific_data_assistant/dashboard.py
+```
+
+Dash table interface:
 
 ```zsh
 python scripts/run_dash.py --port 8050
 ```
 
-Open `http://127.0.0.1:8050`, click **Scan and Preview**, review the
+Open `http://127.0.0.1:8050`, click **Parse and Show Overview**, review the
 file/parameter table, send feedback, then click **Approve and Write Outputs**.
 
-The same guided workflow is available as a Streamlit app:
+Command-line Phase 1 ingestion:
 
 ```zsh
-python scripts/run_api.py --port 8000
-streamlit run scientific_data_assistant/streamlit_metadata_app.py --server.port 8501
+python scripts/run_phase1.py sample_data demo_output
 ```
 
-Open `http://127.0.0.1:8501`, answer the agent's folder and filename-pattern
-questions, review the overview table, send feedback if needed, then approve.
+Command-line discussion agents:
+
+```zsh
+python scripts/run_discussion.py demo_output "Which sample has the strongest signal and what should we inspect next?"
+```
 
 ## Shared Contract
 
@@ -116,7 +138,7 @@ changing the Phase 1 contract.
 
 ## Teammate Handoff
 
-- Phase 1 owner: implement/improve ingestion and metadata extraction.
+- Phase 1 owner: guided metadata agent, ingestion, and filename extraction.
 - Phase 2 owner: build plots from `metadata_table.csv` and `parsed_traces/`.
 - Phase 3 owner: build comments and quality flags through `comments.csv`.
 - Phase 4 owner: build LangGraph discussion over the shared outputs.
@@ -136,17 +158,23 @@ The persisted team plan is in `HACKATHON_PLAN.md`.
 
 ## API Key Setup
 
-Do not store real API keys in code. To enable optional LLM polishing in the
-discussion layer, put your key in the local `.env` file:
+Do not store real API keys in code. To enable optional model assistance in the
+metadata agent and optional LLM polishing in the discussion layer, put your key
+in the local `.env` file:
 
 ```text
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-4.1-mini
 ```
 
-LangGraph itself orchestrates the agents; the OpenAI key is only needed if you
-install `langchain-openai` and want the final discussion answer to be polished by
-an LLM.
+You can also set a separate metadata-agent model:
+
+```text
+METADATA_AGENT_MODEL=gpt-4.1-mini
+```
+
+LangGraph itself orchestrates the agents; the OpenAI key is only needed for
+optional model-assisted interpretation or final discussion polishing.
 
 The `.env` file is ignored by git and loaded automatically by
 `scripts/run_discussion.py`.
