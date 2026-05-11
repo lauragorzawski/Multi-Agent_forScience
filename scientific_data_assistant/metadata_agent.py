@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, TypedDict
@@ -17,6 +18,9 @@ class MetadataAgentState(TypedDict, total=False):
     output_dir: str
     metadata_pattern: str
     pattern_example: str
+    use_model_agent: bool
+    model_interpretation: dict[str, Any]
+    model_status: str
     messages: list[dict[str, str]]
     discovered_files: list[str]
     proposed_columns: list[str]
@@ -88,6 +92,7 @@ def run_metadata_agent_turn(state: MetadataAgentState | None, user_message: str 
 
     graph = StateGraph(MetadataAgentState)
     graph.add_node("scan_files", _scan_files)
+    graph.add_node("interpret_inputs", _interpret_inputs)
     graph.add_node("infer_rules", _infer_rules)
     graph.add_node("generate_code", _generate_code)
     graph.add_node("validate_code", _validate_code)
@@ -95,7 +100,8 @@ def run_metadata_agent_turn(state: MetadataAgentState | None, user_message: str 
     graph.add_node("commit_outputs", _commit_outputs)
     graph.add_node("respond", _respond)
     graph.set_entry_point("scan_files")
-    graph.add_edge("scan_files", "infer_rules")
+    graph.add_edge("scan_files", "interpret_inputs")
+    graph.add_edge("interpret_inputs", "infer_rules")
     graph.add_edge("infer_rules", "generate_code")
     graph.add_edge("generate_code", "validate_code")
     graph.add_conditional_edges("validate_code", _next_after_validation, {"commit": "commit_outputs", "preview": "build_preview"})
@@ -152,6 +158,7 @@ def load_metadata_extractor(code: str) -> MetadataExtractor:
 
 def _run_without_langgraph(state: MetadataAgentState) -> MetadataAgentState:
     state = _scan_files(state)
+    state = _interpret_inputs(state)
     state = _infer_rules(state)
     state = _generate_code(state)
     state = _validate_code(state)
@@ -174,10 +181,25 @@ def _scan_files(state: MetadataAgentState) -> MetadataAgentState:
     return state
 
 
+def _interpret_inputs(state: MetadataAgentState) -> MetadataAgentState:
+    interpretation = _deterministic_interpretation(state)
+    state["model_status"] = "Model assistance is off; using deterministic interpretation."
+
+    if state.get("use_model_agent"):
+        model_interpretation, status = _maybe_interpret_with_model(state)
+        state["model_status"] = status
+        if model_interpretation:
+            interpretation = _merge_interpretations(interpretation, model_interpretation)
+
+    state["model_interpretation"] = interpretation
+    return state
+
+
 def _infer_rules(state: MetadataAgentState) -> MetadataAgentState:
     files = [Path(path) for path in state.get("discovered_files", [])]
     previous_spec = dict(state.get("extraction_spec", {}))
     extra_columns = list(previous_spec.get("extra_columns", []))
+    model_interpretation = dict(state.get("model_interpretation", {}))
     user_message = _latest_user_message(state)
     pattern_context = " ".join(
         part
@@ -195,6 +217,9 @@ def _infer_rules(state: MetadataAgentState) -> MetadataAgentState:
     for column in _columns_from_feedback(pattern_context):
         if column not in extra_columns and column not in METADATA_COLUMNS:
             extra_columns.append(column)
+    for column in _normalize_column_names(model_interpretation.get("extra_columns", [])):
+        if column not in extra_columns and column not in METADATA_COLUMNS:
+            extra_columns.append(column)
 
     spec = {
         "base_columns": METADATA_COLUMNS,
@@ -210,6 +235,8 @@ def _infer_rules(state: MetadataAgentState) -> MetadataAgentState:
         "feedback_notes": previous_spec.get("feedback_notes", []),
         "user_metadata_pattern": state.get("metadata_pattern", ""),
         "user_pattern_example": state.get("pattern_example", ""),
+        "model_interpretation": model_interpretation,
+        "model_status": state.get("model_status", ""),
     }
     if user_message and not _message_approves(user_message):
         spec["feedback_notes"] = [*spec["feedback_notes"], user_message][-6:]
@@ -295,6 +322,8 @@ def _respond(state: MetadataAgentState) -> MetadataAgentState:
     messages = list(state.get("messages", []))
     errors = state.get("validation_errors", [])
     state["suggested_user_messages"] = _suggested_user_messages(state)
+    model_note = state.get("model_interpretation", {}).get("agent_note", "")
+    model_status = state.get("model_status", "")
     if errors:
         content = "I found a problem before writing outputs:\n\n" + "\n".join(f"- {error}" for error in errors)
     elif state.get("approved"):
@@ -323,6 +352,10 @@ def _respond(state: MetadataAgentState) -> MetadataAgentState:
             f"{unclear_text}\n\n"
             "Is this fine? Send feedback if anything is wrong, or approve when it looks right."
         )
+    if model_note and not errors and not state.get("approved"):
+        content += f"\n\nAgent interpretation: {model_note}"
+    if model_status:
+        content += f"\n\nModel status: {model_status}"
     if not messages or messages[-1].get("role") != "assistant" or messages[-1].get("content") != content:
         messages.append({"role": "assistant", "content": content})
     state["messages"] = messages
@@ -477,6 +510,10 @@ def _write_agent_artifacts(paths: ProjectPaths, state: MetadataAgentState) -> No
         "```json",
         json.dumps(state.get("extraction_spec", {}), indent=2),
         "```",
+        "",
+        "## Model Status",
+        "",
+        state.get("model_status", ""),
     ]
     (paths.root / "metadata_agent_report.md").write_text("\n".join(report), encoding="utf-8")
 
@@ -518,6 +555,123 @@ def _columns_from_feedback(message: str) -> list[str]:
         if clean and clean not in normalized:
             normalized.append(clean)
     return normalized[:8]
+
+
+def _deterministic_interpretation(state: MetadataAgentState) -> dict[str, Any]:
+    context = " ".join(
+        part
+        for part in [
+            state.get("metadata_pattern", ""),
+            state.get("pattern_example", ""),
+            _latest_user_message(state),
+        ]
+        if part
+    )
+    extra_columns = _columns_from_feedback(context)
+    if "position" in context.lower():
+        extra_columns.extend(["position_1", "position_2"])
+    return {
+        "extra_columns": _normalize_column_names(extra_columns),
+        "agent_note": "I interpreted your filename pattern and feedback using local rules.",
+        "questions": [],
+    }
+
+
+def _maybe_interpret_with_model(state: MetadataAgentState) -> tuple[dict[str, Any], str]:
+    _load_local_env()
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key or api_key in {"your_api_key_here", "your_key_here"}:
+        return {}, "Model assistance requested, but OPENAI_API_KEY is not configured; using deterministic fallback."
+
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        return {}, "Model assistance requested, but langchain-openai is not installed; using deterministic fallback."
+
+    model = os.environ.get("METADATA_AGENT_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    prompt = _model_interpretation_prompt(state)
+    try:
+        response = ChatOpenAI(model=model, temperature=0, api_key=api_key).invoke(prompt)
+        payload = _extract_json_object(str(response.content))
+    except Exception as exc:  # pragma: no cover - depends on optional network/API availability
+        return {}, f"Model assistance failed ({exc}); using deterministic fallback."
+
+    if not isinstance(payload, dict):
+        return {}, "Model assistance returned an unreadable response; using deterministic fallback."
+    return payload, f"Model assistance used `{model}` for pattern/feedback interpretation."
+
+
+def _model_interpretation_prompt(state: MetadataAgentState) -> str:
+    examples = [Path(path).name for path in state.get("discovered_files", [])[:12]]
+    allowed_columns = [
+        "measurement_date",
+        "setting_value",
+        "position_1",
+        "position_2",
+        "replicate_index",
+        "sample_id",
+        "material",
+        "thickness_nm",
+        "exposure_time_s",
+        "measurement_type",
+    ]
+    return (
+        "You help scientific researchers convert measurement filenames into a metadata table. "
+        "Interpret the user's folder/pattern/example/feedback. Return only JSON with keys: "
+        "extra_columns (array of snake_case column names), agent_note (short sentence), "
+        "questions (array of short clarification questions). Do not invent numeric values; only infer schema/rules. "
+        f"Allowed/common columns: {allowed_columns}.\n\n"
+        f"Filename examples: {examples}\n"
+        f"User metadata pattern: {state.get('metadata_pattern', '')}\n"
+        f"User example explanation: {state.get('pattern_example', '')}\n"
+        f"Latest feedback: {_latest_user_message(state)}\n"
+    )
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    clean = text.strip()
+    if clean.startswith("```"):
+        clean = re.sub(r"^```(?:json)?\s*", "", clean)
+        clean = re.sub(r"\s*```$", "", clean)
+    try:
+        value = json.loads(clean)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+        if not match:
+            return {}
+        value = json.loads(match.group(0))
+    return value if isinstance(value, dict) else {}
+
+
+def _merge_interpretations(base: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
+    extra_columns = [
+        *_normalize_column_names(base.get("extra_columns", [])),
+        *_normalize_column_names(model.get("extra_columns", [])),
+    ]
+    return {
+        "extra_columns": _normalize_column_names(extra_columns),
+        "agent_note": str(model.get("agent_note") or base.get("agent_note") or ""),
+        "questions": [str(question) for question in model.get("questions", []) if str(question).strip()][:5],
+    }
+
+
+def _normalize_column_names(columns: Any) -> list[str]:
+    normalized: list[str] = []
+    if not isinstance(columns, list):
+        return normalized
+    for column in columns:
+        clean = re.sub(r"[^A-Za-z0-9_]+", "_", str(column)).strip("_").lower()
+        if clean and clean not in normalized:
+            normalized.append(clean)
+    return normalized
+
+
+def _load_local_env() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
 
 
 def _generated_extractor_code(extra_columns: list[str]) -> str:

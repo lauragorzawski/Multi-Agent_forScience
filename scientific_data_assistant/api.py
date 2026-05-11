@@ -27,6 +27,10 @@ class MetadataAgentTurnRequest(BaseModel):
         default=None,
         description="One representative filename example and what each part means.",
     )
+    use_model_agent: bool = Field(
+        default=False,
+        description="Use an optional LLM call to interpret pattern/example/feedback. Falls back to deterministic rules if unavailable.",
+    )
     user_message: str = Field(
         default="",
         description=(
@@ -48,6 +52,7 @@ class MetadataAgentTurnResponse(BaseModel):
     unclear_items: list[str] = Field(default_factory=list)
     suggested_user_messages: list[str] = Field(default_factory=list)
     assistant_message: str = ""
+    model_status: str = ""
 
 
 def run_metadata_agent_api_turn(payload: MetadataAgentTurnRequest | dict[str, Any]) -> dict[str, Any]:
@@ -63,6 +68,7 @@ def run_metadata_agent_api_turn(payload: MetadataAgentTurnRequest | dict[str, An
         state["metadata_pattern"] = request.metadata_pattern
     if request.pattern_example is not None:
         state["pattern_example"] = request.pattern_example
+    state["use_model_agent"] = request.use_model_agent
 
     next_state = run_metadata_agent_turn(state, request.user_message)
     return {
@@ -71,6 +77,7 @@ def run_metadata_agent_api_turn(payload: MetadataAgentTurnRequest | dict[str, An
         "unclear_items": next_state.get("unclear_items", []),
         "suggested_user_messages": next_state.get("suggested_user_messages", []),
         "assistant_message": _latest_assistant_message(next_state),
+        "model_status": next_state.get("model_status", ""),
     }
 
 

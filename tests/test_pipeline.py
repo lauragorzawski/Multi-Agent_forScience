@@ -151,6 +151,30 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(state["table_overview"], [])
             self.assertIn("What is the pattern", state["messages"][-1]["content"])
 
+    def test_metadata_agent_model_assistance_falls_back_without_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_dir = root / "raw"
+            output_dir = root / "out"
+            input_dir.mkdir()
+            (input_dir / "FGT_1_1_20nm_20250708_0p1.txt").write_text("50.2\t127\n50.8\t125\n", encoding="utf-8")
+
+            with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+                state = run_metadata_agent_turn(
+                    {
+                        "input_dir": str(input_dir),
+                        "output_dir": str(output_dir),
+                        "metadata_pattern": "material_position_thickness_date_setting",
+                        "pattern_example": "FGT_1_1_20nm_20250708_0p1.txt means material, position, thickness, date, setting.",
+                        "use_model_agent": True,
+                    },
+                    "The 0p1 part is setting_value.",
+                )
+
+            self.assertIn("deterministic fallback", state["model_status"])
+            self.assertIn("setting_value", state["proposed_columns"])
+            self.assertEqual(state["table_overview"][0]["setting_value"], "0.1")
+
     def test_metadata_agent_code_validation_accepts_safe_and_rejects_unsafe(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

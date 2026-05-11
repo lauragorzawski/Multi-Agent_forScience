@@ -50,6 +50,11 @@ def main() -> None:
     with st.sidebar:
         st.header("Connection")
         api_url = st.text_input("API URL", DEFAULT_API_URL)
+        use_model_agent = st.checkbox(
+            "Use model assistance for pattern and feedback",
+            value=False,
+            help="Optional. Uses your configured OpenAI key/model to interpret the text fields, then falls back to deterministic parsing if unavailable.",
+        )
         if st.button("Reset conversation"):
             st.session_state.metadata_agent_state = {}
             st.session_state.last_response = {}
@@ -75,17 +80,17 @@ def main() -> None:
     button_col_1, button_col_2 = st.columns([1, 1])
     with button_col_1:
         if st.button("Parse and Show Overview", type="primary", use_container_width=True):
-            _run_turn(api_url, input_dir, output_dir, metadata_pattern, pattern_example, "")
+            _run_turn(api_url, input_dir, output_dir, metadata_pattern, pattern_example, use_model_agent, "")
     with button_col_2:
         if st.button("Approve and Write Outputs", use_container_width=True):
-            _run_turn(api_url, input_dir, output_dir, metadata_pattern, pattern_example, "approve and write outputs")
+            _run_turn(api_url, input_dir, output_dir, metadata_pattern, pattern_example, use_model_agent, "approve and write outputs")
 
     feedback = st.text_area(
         "Feedback to the agent",
         placeholder="Example: The 0p1 or 1p0 part should be setting_value, not exposure_time_s.",
     )
     if st.button("Send Feedback"):
-        _run_turn(api_url, input_dir, output_dir, metadata_pattern, pattern_example, feedback)
+        _run_turn(api_url, input_dir, output_dir, metadata_pattern, pattern_example, use_model_agent, feedback)
 
     _render_response()
 
@@ -103,6 +108,7 @@ def _run_turn(
     output_dir: str,
     metadata_pattern: str,
     pattern_example: str,
+    use_model_agent: bool,
     user_message: str,
 ) -> None:
     payload = {
@@ -110,6 +116,7 @@ def _run_turn(
         "output_dir": output_dir,
         "metadata_pattern": metadata_pattern,
         "pattern_example": pattern_example,
+        "use_model_agent": use_model_agent,
         "user_message": user_message,
         "state": st.session_state.metadata_agent_state,
     }
@@ -133,6 +140,10 @@ def _render_response() -> None:
     if assistant_message:
         with st.chat_message("assistant"):
             st.markdown(assistant_message)
+
+    model_status = response.get("model_status", state.get("model_status", ""))
+    if model_status:
+        st.caption(model_status)
 
     table_overview = response.get("table_overview", [])
     if table_overview:
