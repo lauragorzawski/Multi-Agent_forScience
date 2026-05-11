@@ -1,0 +1,23 @@
+.env
+.venv/
+.DS_Store
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Generated demo/output folders
+demo_output/
+demo_output_current/
+fgt_output/
+fgt_output_api/
+
+# Local/private raw lab data
+raw_data/
+
+# Large local reference artifacts
+*.pdf
+*.pptx
+
+# Other local experiments
+thought-atlas/
+AGENTS.md
